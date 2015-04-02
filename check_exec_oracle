@@ -1,0 +1,368 @@
+#!/usr/bin/perl
+#--------------------------------------------------------------------------------------#
+# This nagios plugin checks all the processes necessary for a specific service like :  #
+#     - mqseries                                                                       #
+#     - oracle                                                                         #
+#     - dimension cm (serena)                                                          #
+#     - any application running a list of processes                                    #
+#--------------------------------------------------------------------------------------#
+use Filesys::Df;
+use Nagios::Plugin;
+use File::Basename;
+use Nagios::Plugin::Performance;
+
+#-------------------------NAGIOS PLUGIN SPECIFIC VALUES--------------------------------#
+$trace=0;
+my $VERSION=1.0;
+my $blurb="Controle execution of myapp processies";
+my $extra="Elio Canale-Parola";
+my $url="http://fr.linkedin.com/in/eliocanaleparola/";
+my $license="GPL";
+my $returnCode=0;
+my $progname=basename($0);
+my $infomode = 0;
+
+$ETAT_OK=0;
+$ETAT_WARNING=1;
+$ETAT_CRITICAL=2;
+$ETAT_UNKNOWN=3;
+
+#--------------------APPLICATION SPECIFIC PLUGIN VALUES--------------------------------#
+my @listeAbsent = ();  #This array contains the list of missing processes
+#--------------------------------------------------------------------------------------#
+# The following array contains the list of all processes that must be in execution     #
+# Each line of this array conatins the following info                                  #
+# proc_name:proc_description:presence(1=mandatory, 0:not mandatory):number of instances#
+# This table must be initialized with the initializeProcArray procedure                #
+#--------------------------------------------------------------------------------------#
+my %procName = ();
+#--------------------------------------------------------------------------------------#
+#          WARNING : The following value must be changed according to your needs       #
+#--------------------------------------------------------------------------------------#
+my $headerMessage="Oracle processes control";
+
+#-----------------------NAGIOS PLUGIN STRUCTURE (GLOVAL VARIABLE)----------------------#
+my $np = Nagios::Plugin->new(
+    usage => "Usage: %s ",
+    version => $VERSION,
+    blurb   => $blurb,
+    extra   => $extra,
+    url     => $url,
+    license => $license,
+    plugin  => basename $0,
+    timeout => 15,
+);
+
+#--------------------------------------------------------------------------------------#
+# defineCallParameters : Define plugin call parameters                                 #
+#--------------------------------------------------------------------------------------#
+# Call parameters : none                                                               #
+# Side effects    : uptade $np global variable, adding plugin call parameters          #
+# Return code     : $STATE_OK                                                          # 
+#--------------------------------------------------------------------------------------#
+sub defineCallParameters() {
+    # Parameter : warning threshold
+    $np->add_arg(
+        spec => 'warning|w=s',
+        help => "warning threshold in number of minimal exec process. When exec process under this threshold, a warning message is sent",
+        required => 1
+    );
+
+    # Parameter : critical threshold
+    $np->add_arg(
+        spec => 'critical|c=s',
+        help => "critical threshold in number of minimal exec process. When exec process under this threshold, a critical message is sent",
+        required => 1
+    );
+
+    # Parameter : trace mode
+    $np->add_arg(
+        spec => 'trace|T=s',
+        help => "Activate trace mode if value different from 0",
+        required => 0
+    );
+
+    # Parameter : Display list and status of each process checked
+    $np->add_arg(
+        spec => 'infomode|I=s',
+        help => "Activate display process and status if value different from 0",
+        required => 0
+    );
+    return(0);
+}
+#--------------------------------------------------------------------------------------#
+#                                 END defineCallParameters                             #
+#--------------------------------------------------------------------------------------#
+
+#--------------------------------------------------------------------------------------#
+# processCallParameters : Parse and process plugin arguments                           #
+#--------------------------------------------------------------------------------------#
+# Call parameters : none                                                               #
+# Side effects    : uptade following global variables, if no input argument            #
+#                   is given, default values are used                                  #
+#                   trace    : default value is 0 (no trace)                           #
+#                   warning  : warning threshold on number of processes in execution   #
+#                   critical : critical threshold on number of processes in execution  #
+#                   infomode : Display list and status of each process checked         #
+# Return code     : $STATE_OK if all arguments are valid, otherwhise                   #
+#                   $STATE_UNKNOWN, in this case $errorMessage contains a message      #
+#--------------------------------------------------------------------------------------#
+sub processCallParameters() {
+
+    $np->getopts;
+    if ($np->opts->trace) {
+        $trace = $np->opts->trace;
+    }
+    if ($np->opts->infomode) {
+        $infomode = $np->opts->infomode;
+    }
+    if ($np->opts->warning) {
+        $warning = $np->opts->warning;
+        if ($warning !~/^(@?(\d+(\.\d+)?|(\d+|~):(\d+(\.\d+)?)?))?$/){
+        ${$erreur} = "Invalid Warning threshold in $warning";
+        return $STATE_UNKNOWN;
+        }
+    }
+    if ($np->opts->critical) {
+        $critique = $np->opts->critical;
+        if ($critique !~/^(@?(\d+(\.\d+)?|(\d+|~):(\d+(\.\d+)?)?))?$/){
+        ${$erreur} = "Invalid Critical threshold in $critique";
+        return $STATE_UNKNOWN;
+        }
+    }
+    return($STATE_OK);
+}
+#--------------------------------------------------------------------------------------#
+#                                 END processCallParameters                            #
+#--------------------------------------------------------------------------------------#
+
+
+my $msgWarning="";
+my $msgCritical="";
+
+#--------------------------------------------------------------------------------------#
+# PLUGIN SPECIFIC CODE : This code must be modified to fit the plugin needs            #
+#--------------------------------------------------------------------------------------#
+
+#--------------------------------------------------------------------------------------#
+# The following array contains the list of all processes that must be in execution     #
+# Each line of this array conatins the following info                                  #
+# proc_name:proc_description:presence(1=mandatory, 0:not mandatory):number of instances#
+# This table must be initialized with the initializeProcArray procedure                #
+#--------------------------------------------------------------------------------------#
+
+#--------------------------------------------------------------------------------------#
+# setProcArrayRow : Set a specific process row in the procName array                   #
+#--------------------------------------------------------------------------------------#
+# Call parameters :                                                                    #
+#    $prog   : program name to check                                                   #
+#    $fct    : program description (used with infomode)                                #
+#    $pres   : program presence (1:mandatory, 0:don't care)                            #
+#    $nb     : number of process in execution                                          #
+#                                                                                      #
+# Side effects    : a new row is added in the procName array                           #
+# Return code     : none                                                               #
+#--------------------------------------------------------------------------------------#
+sub setProcArrayRow {
+    my $prog = shift;
+    my $fct = shift;
+    my $pres = shift;
+    my $nb = shift;
+    $procName{$prog}{'fonction'} = $fct;
+    $procName{$prog}{'presence'} = $pres;
+    $procName{$prog}{'number'} = $nb;
+}
+#--------------------------------------------------------------------------------------#
+#                                 END setProcArrayRow                                  #
+#--------------------------------------------------------------------------------------#
+
+
+#--------------------------------------------------------------------------------------#
+# initializeProcArray : Initialize procName Array with all processes to check          #
+# This procedure must be adapted to your specific needs.                               #
+#--------------------------------------------------------------------------------------#
+# Call parameters : none                                                               #
+# Side effects    : procName Array initialized with desired values                     #
+# Return code     : none                                                               #
+#--------------------------------------------------------------------------------------#
+sub initializeProcArray {
+    setProcArrayRow('ora_pmon',"Process Monitor Process",1,0);
+    setProcArrayRow('ora_psp0',"Application Trigger monitor",1,0);
+    setProcArrayRow('ora_vktm',"virtual keeper of time",1,0);
+    setProcArrayRow('ora_gen0',"general task execution background process",1,0);
+    setProcArrayRow('ora_diag',"diagnostic dumps and executes global oradebug commands",1,0);
+    setProcArrayRow('ora_dbrm',"database resource manager",1,0);
+    setProcArrayRow('ora_dia0',"hang detection and deadlock resolution",1,0);
+    setProcArrayRow('ora_mman',"internal database tasks",1,0);
+    setProcArrayRow('ora_dbw0',"Database Writer Process",1,0);
+    setProcArrayRow('ora_lgwr',"Log Writer Process",1,0);
+    setProcArrayRow('ora_ckpt',"Checkpoint Process",1,0);
+    setProcArrayRow('ora_smon',"System Monitor Process",1,0);
+    setProcArrayRow('ora_reco',"Recoverer Process",1,0);
+    setProcArrayRow('ora_mmon',"various manageability-related background tasks",1,0);
+    setProcArrayRow('ora_mmnl',"light-weight manageability-related tasks",1,0);
+    setProcArrayRow('ora_d000',"Dispatcher Process",1,0);
+    setProcArrayRow('ora_s000',"Shared Server Process",1,0);
+    setProcArrayRow('ora_qmnc',"Queue Monitor Coordinator",1,0);
+    setProcArrayRow('ora_q000',"Queue Monitor Server Process",1,0);
+    setProcArrayRow('ora_q001',"Queue Monitor Server Process",1,0);
+    setProcArrayRow('ora_smco',"space management coordinator",1,0);
+    setProcArrayRow('ora_emnc',"process for database event management and notifications",1,0);
+    setProcArrayRow('ora_w000',"Slave Space Management Coordinator Process",1,0);
+}
+#--------------------------------------------------------------------------------------#
+#                                 END initializeProcArray                              #
+#--------------------------------------------------------------------------------------#
+
+
+#--------------------------------------------------------------------------------------#
+# checkProcesses  : Check process running and check and update procName array rows     #
+#--------------------------------------------------------------------------------------#
+# Call parameters :                                                                    #
+#    $procArray : procName array containing the list of processes to check             #
+#                                                                                      #
+# Side effects    : Each row is updated according to processes in execution            #
+#                   if infomode, the list of processes is printed on the screen        #
+# Return code     : The number of detected errors is returned                          #
+#--------------------------------------------------------------------------------------#
+sub checkProcesses {
+    my $procArray = shift;
+    my @sortedList = sort (keys %{$procArray});
+    my $nbErrors = 0;
+    my $nbExec = 0;
+    foreach $a (@sortedList ) {
+        if ($procArray->{$a}{'presence'} > 0 ) {
+          if ($procArray->{$a}{'number'} > 0){
+              ($infomode)? print("$a:$procArray->{$a}{'presence'}:$procArray->{$a}{'number'}:OK:$procArray->{$a}{'fonction'}\n"):();
+              $nbExec++;
+          } else {
+              ($infomode)? print("$a:$procArray->{$a}{'presence'}:$procArray->{$a}{'number'}:KO:$procArray->{$a}{'fonction'}:Process absent\n"):();
+              push(@listeAbsent,$a);
+              $nbErrors++;
+          }
+        }
+    }
+    $message = $headerMessage.":".$nbExec.":".$nbErrors;
+    if ($nbErrors > 0) {
+       $message = $message.": ERROR, some processes are missing";
+    } else {
+       $message = $message.": OK, all the processes are running";
+    }
+    ($trace)? print("$message\n"):();
+    return($nbErrors);
+
+}# checkProcesses
+#--------------------------------------------------------------------------------------#
+#                                 END checkProcesses                                   #
+#--------------------------------------------------------------------------------------#
+
+
+
+#--------------------------------------------------------------------------------------#
+# dumpArray  : Display all procName array fields (USE IN DEBUG MODE ONLY)              #
+#--------------------------------------------------------------------------------------#
+# Call parameters :                                                                    #
+#    $procArray : procName array containing the list of processes to check             #
+#                                                                                      #
+# Side effects    : Print all procName array lines in a formatted mode                 #
+# Return code     : none                                                               #
+#--------------------------------------------------------------------------------------#
+sub dumpArray {
+    my $procArray = shift;
+    my @sortedList = sort (keys %{$procArray});
+    foreach $a (@sortedList ) {
+        print(" PROCESS      : $a\n");
+        print(" FONCTION     : $procArray->{$a}{'fonction'}\n");
+        print(" PRESENCE     : $procArray->{$a}{'presence'}\n");
+        print(" NOMBRE       : $procArray->{$a}{'number'}\n");
+    }
+}# dumpArray
+#--------------------------------------------------------------------------------------#
+#                                 END dumpArray                                        #
+#--------------------------------------------------------------------------------------#
+
+sub countExecProcesses {
+    my $tab = shift;
+    my $proc = shift;
+    $tab->{$proc}{'number'} += 1;
+}
+
+#--------------------------------------------------------------------------------------#
+# performCheck : Check process execution according to procName array and update        #
+#                procName array with computed values.                                  #
+#--------------------------------------------------------------------------------------#
+# Call parameters :                                                                    #
+#    $procArray : procName array containing the list of processes to check             #
+#                                                                                      #
+# Side effects    : Send a linux ps command, decode outputt and update procName array  #
+#                   with computed values                                               #
+#                   According to results, update msgWarning and msgCritical global var #
+# Return code     : Return code according to procName array specifications             #
+#--------------------------------------------------------------------------------------#
+sub performCheck  {
+    initializeProcArray();
+    $returnCode =  $ETAT_OK;
+    ($trace)? dumpArray(\%procName):();
+    #----------------------------------------------------------------------------------#
+    # The following command must be changed according to your needs                    #
+    #----------------------------------------------------------------------------------#
+    @listeProc = split(/\n/,(`ps -eaf | grep ora_ | grep -v grep | tr -s ' ' ';'`));
+    
+    foreach $ligne (@listeProc) {
+        @fieldsList = split(/;/,$ligne);
+        $execProc = basename($fieldsList[7]);
+        ($trace)? print("execProc : $execProc\n"):();
+        #------------------------------------------------------------------------------#
+        # The following regexp must be changed or removed according to your needs      #
+        #------------------------------------------------------------------------------#
+        if($execProc =~ m/(ora_.*)_(.*)/){
+            ($trace)? print("execProc filtre : $1\n"):();
+            my $runningProcess = $1;
+            countExecProcesses(\%procName,$runningProcess);
+        }
+    }
+    my $retour = checkProcesses(\%procName);
+    if ($retour > $critique) {
+        $returnCode = $ETAT_CRITICAL;
+        $msgCritical = sprintf("::Missing processes[@listeAbsent]");
+    } elsif ($retour > $warning) {
+        $returnCode = $ETAT_WARNING;
+        $msgWarning = sprintf("::Missing processes[@listeAbsent]");
+    } 
+    return($returnCode);
+}    
+#--------------------------------------------------------------------------------------#
+#                                 END performCheck                                     #
+#--------------------------------------------------------------------------------------#
+
+    
+#--------------------------------------------------------------------------------------#
+#                              NAGIOS MAIN PROCEDURE                                   #
+#--------------------------------------------------------------------------------------#
+#                            #     #    #      ###   #     #                           #
+#                            ##   ##   # #      #    ##    #                           #
+#                            # # # #  #   #     #    # #   #                           #
+#                            #  #  # #     #    #    #  #  #                           #
+#                            #     # #######    #    #   # #                           #
+#                            #     # #     #    #    #    ##                           #
+#                            #     # #     #   ###   #     #                           #
+#--------------------------------------------------------------------------------------#
+# Parse and process arguments
+my $e1 = defineCallParameters();
+my $e2 = processCallParameters();
+my $e3 = performCheck();
+
+if ( $returnCode == $ETAT_CRITICAL) {
+    $message =  $headerMessage." ".$msgCritical;
+    $np->nagios_exit( CRITICAL, $message );
+} elsif ($returnCode == $ETAT_WARNING) {
+    $message =  $headerMessage." ".$msgWarning;
+    $np->nagios_exit( WARNING, $message );
+} else {
+    $message =  $headerMessage.": All processes are present";
+    $np->nagios_exit( OK, $message );
+}
+#--------------------------------------------------------------------------------------#
+#                                 END PLUGIN                                           #
+#--------------------------------------------------------------------------------------#
+
