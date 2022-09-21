@@ -364,7 +364,7 @@ sub performCheck {
         BEGIN {
             IO::Socket::SSL::set_ctx_defaults(
                 verify_mode => Net::SSLeay->VERIFY_PEER(),
-                ca_file => "/home/nagios/mail/entrust_2048_ca.cer",
+                ca_file => "/etc/ssl/certs/ca-certificates.crt",
                 # ca_path => "/alternate/path/to/cert/authority/directory"
             );
         }
