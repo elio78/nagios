@@ -3,9 +3,9 @@
 # This nagios plugin checks an url given in parameters and search for a specific string#
 #--------------------------------------------------------------------------------------#
 
-use Nagios::Plugin;
+use Monitoring::Plugin;
 use File::Basename;
-use Nagios::Plugin::Performance;
+#use Nagios::Plugin::Performance;
 use Time::Local;
 use POSIX;
 use Time::HiRes qw( gettimeofday tv_interval);
@@ -52,7 +52,7 @@ my $disposition = 'P';   #Disposition used to count mails P=present, U=unread
 
 
 #-----------------------NAGIOS PLUGIN STRUCTURE (GLOVAL VARIABLE)----------------------#
-my $np = Nagios::Plugin->new(
+my $np = Monitoring::Plugin->new(
     usage => "Usage: %s ",
     version => $VERSION,
     blurb   => $blurb,
